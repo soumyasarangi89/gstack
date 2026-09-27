@@ -154,7 +154,6 @@ describe('selectTests', () => {
       ['plan-eng-review/sections/review-sections.md', 'TEST_COVERAGE_AUDIT_PLAN'],
       ['ship/sections/tests.md', 'TEST_BOOTSTRAP'],
       ['ship/sections/test-coverage.md', 'TEST_COVERAGE_AUDIT_SHIP'],
-      ['qa/sections/test-bootstrap.md', 'TEST_BOOTSTRAP'],
       ['design-review/SKILL.md', 'TEST_BOOTSTRAP'],
     ];
     for (const [output, token] of consumers) {
@@ -171,7 +170,7 @@ describe('selectTests', () => {
     expect(actual.reason).toBe('diff');
     expect(actual.selected.sort()).toEqual(expected);
     for (const id of ['plan-eng-finding-count', 'plan-eng-multi-finding-batching',
-      'autoplan-chain-pty', 'plan-eng-review-format-coverage', 'ship-section-loading', 'qa-fix-loop']) {
+      'autoplan-chain-pty', 'plan-eng-review-format-coverage', 'ship-section-loading']) {
       expect(actual.selected).toContain(id);
       expect(E2E_TIERS[id]).toBe('periodic');
     }
@@ -179,7 +178,7 @@ describe('selectTests', () => {
       expect(actual.selected).toContain(id);
       expect(E2E_TIERS[id]).toBe('gate');
     }
-    for (const unrelated of ['browse-basic', 'retro', 'office-hours-section-loading', 'review-coverage-audit']) {
+    for (const unrelated of ['browse-basic', 'retro', 'office-hours-section-loading', 'review-coverage-audit', 'qa-fix-loop', 'qa-quick']) {
       expect(actual.selected).not.toContain(unrelated);
     }
   });
@@ -197,6 +196,12 @@ describe('selectTests', () => {
     const result = selectTests(['scripts/resolvers/testing.ts'], LLM_JUDGE_TOUCHFILES);
     expect(result.reason).toBe('diff');
     expect(result.selected.sort()).toEqual(['plan-eng-review/SKILL.md sections', 'ship/SKILL.md workflow']);
+  });
+
+  test('ship controller guards select their workflow judge', () => {
+    const result = selectTests(['test/ship-control-flow.test.ts'], LLM_JUDGE_TOUCHFILES);
+    expect(result.reason).toBe('diff');
+    expect(result.selected).toEqual(['ship/SKILL.md workflow']);
   });
 
   test('bounded shared-code planning selects its consumed resolvers, excluding other Eng sections', () => {
@@ -330,7 +335,7 @@ describe('selectTests', () => {
     const pathCases = ['shared-libs-review-path-eligibility', 'shared-libs-review-index-flags',
       'shared-libs-review-prior-coverage'];
     expect(selectTests(['test/shared-libs-revalidation-prompt.test.ts'], E2E_TOUCHFILES).selected.sort())
-      .toEqual([...pathCases, 'shared-libs-review-revalidation'].sort());
+      .toEqual([...pathCases, 'shared-libs-review-revalidation', 'shared-libs-review-lifecycle'].sort());
     expect(selectTests(['test/fixtures/shared-libs-index-flags-skip-question.json'], E2E_TOUCHFILES).selected.sort())
       .toEqual([...pathCases, 'shared-libs-review-revalidation', 'shared-libs-review-lifecycle'].sort());
     expect(selectTests(['test/fixtures/shared-libs-paths-max-turns-public.json'], E2E_TOUCHFILES).selected)
@@ -457,10 +462,10 @@ describe('selectTests', () => {
 
   test('works with LLM_JUDGE_TOUCHFILES', () => {
     const result = selectTests(['qa/SKILL.md'], LLM_JUDGE_TOUCHFILES);
-    expect(result.selected).toContain('qa/SKILL.md workflow');
-    expect(result.selected).toContain('qa/SKILL.md health rubric');
-    expect(result.selected).toContain('qa/SKILL.md anti-refusal');
-    expect(result.selected.length).toBe(3);
+    expect(result.selected.sort()).toEqual([
+      'qa/SKILL.md workflow', 'qa/SKILL.md health rubric', 'qa/SKILL.md anti-refusal',
+      'qa-only/SKILL.md workflow', 'review/SKILL.md workflow', 'ship/SKILL.md workflow',
+    ].sort());
   });
 
   test('SKILL.md.tmpl root template selects root-dependent tests and routing tests', () => {
@@ -604,7 +609,7 @@ describe('TOUCHFILES completeness', () => {
     );
 
     const unique = registeredJudgeTestNames(llmContent);
-    expect(unique).toHaveLength(27);
+    expect(unique).toHaveLength(28);
 
     const missing = unique.filter(name => !(name in LLM_JUDGE_TOUCHFILES));
     if (missing.length > 0) {
@@ -623,7 +628,7 @@ describe('TOUCHFILES completeness', () => {
       testIfSelected('unmapped judge case', async () => {}, 120_000);
     `;
     const names = registeredJudgeTestNames(withUnmappedCase);
-    expect(names).toHaveLength(28);
+    expect(names).toHaveLength(29);
     expect(names.filter(name => !(name in LLM_JUDGE_TOUCHFILES))).toEqual(['unmapped judge case']);
   });
 

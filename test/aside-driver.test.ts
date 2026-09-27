@@ -438,7 +438,16 @@ describe('web research ({{ASIDE_RESEARCH}})', () => {
 describe('browser consolidation tripwires', () => {
   test('every browsing skill carries the Aside contract followed by the $B fallback', () => {
     for (const skill of BROWSING_SKILLS) {
-      const md = fs.readFileSync(path.join(ROOT, skill, 'SKILL.md'), 'utf-8');
+      let md = fs.readFileSync(path.join(ROOT, skill, 'SKILL.md'), 'utf-8');
+      if (skill === 'qa' || skill === 'qa-only') {
+        expect(md).toContain('sections/browser-setup.md');
+        expect(md).not.toContain('## BROWSER SETUP (Aside');
+        if (skill === 'qa-only') {
+          expect(md).toContain('Read `sections/browser-setup.md` relative to the installed `qa`');
+          expect(fs.existsSync(path.join(ROOT, skill, 'sections/browser-setup.md'))).toBe(false);
+        }
+        md += fs.readFileSync(path.join(ROOT, 'qa/sections/browser-setup.md'), 'utf8');
+      }
       const aside = md.indexOf('## BROWSER SETUP (Aside');
       const fb = md.indexOf("## Browser fallback: gstack's own headless browser");
       expect({ skill, hasAside: aside >= 0, hasFallback: fb >= 0, fallbackAfterAside: fb > aside }).toEqual({ skill, hasAside: true, hasFallback: true, fallbackAfterAside: true });

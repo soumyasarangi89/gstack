@@ -8,7 +8,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { prepareWorkflowJudgeCache, validWorkflowJudgeScore, workflowJudgeDependencies, type WorkflowCacheOptions } from './helpers/workflow-judge-cache';
-import { readWorkflowJudgeInput, buildWorkflowJudgePrompt } from './helpers/workflow-judge-input';
+import { readWorkflowJudgeInput, buildWorkflowJudgePrompt, QA_DISCOVERY_REFERENCES } from './helpers/workflow-judge-input';
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }); });
@@ -124,6 +124,20 @@ test('runtime/model/threshold changes miss, and retries never reuse or publish',
   expect(retry.lookup()).toBeNull(); retry.publish(scores); expect(f.entries()).toHaveLength(1);
 });
 
+test('frontier reader calibration cannot reuse a score from the unspecified-reader rubric', () => {
+  const f = fixture(); f.cache().publish(scores);
+  const original = f.opts.prompt;
+  f.opts.agentCapability = 'frontier'; f.refreshPrompt();
+  expect(f.opts.prompt).not.toBe(original);
+  expect(f.cache().lookup()).toBeNull();
+  f.cache().publish(scores);
+  expect(f.entries()).toHaveLength(2);
+  expect(f.cache().lookup()?.scores).toEqual(scores);
+  delete f.opts.agentCapability; f.refreshPrompt();
+  expect(f.opts.prompt).toBe(original);
+  expect(f.cache().lookup()?.scores).toEqual(scores);
+});
+
 test('a pinned workflow judge model overrides the global model and changes the cache identity', () => {
   const f = fixture();
   f.opts.model = 'claude-sonnet-4-6';
@@ -162,12 +176,14 @@ test('workflow registration preserves model work and reserves only terminal-reco
   expect(body).toContain('const workDeadline = started + JUDGE_MS;');
   expect(source).toContain('const WORKFLOW_JUDGE_RECORD_MS = 5_000;');
   expect(source).toContain('const WORKFLOW_JUDGE_TEST_MS = JUDGE_MS + 10_000;');
-  expect(source.match(/\}, WORKFLOW_JUDGE_TEST_MS\);/g)).toHaveLength(16);
+  expect(source.match(/\}, WORKFLOW_JUDGE_TEST_MS\);/g)).toHaveLength(17);
+  expect(source).toContain("testName: 'review/SKILL.md workflow'");
+  expect(source).toContain("testName: 'sync-gbrain/SKILL.md read-only readiness'");
   expect(source.match(/\}, JUDGE_MS\);/g)).toHaveLength(11);
 });
 
 function actualCallback(f: ReturnType<typeof fixture>, overrides: {
-  judge?: (prompt: string, model: undefined, options: { signal: AbortSignal }) => Promise<typeof scores>;
+  judge?: (prompt: string, model: string | undefined, options: { signal: AbortSignal }) => Promise<typeof scores>;
   read?: typeof readWorkflowJudgeInput;
   prepare?: typeof prepareWorkflowJudgeCache;
   clock?: () => number;
@@ -186,19 +202,52 @@ function actualCallback(f: ReturnType<typeof fixture>, overrides: {
   const run = new Function('ROOT', 'readWorkflowJudgeInput',
     'buildWorkflowJudgePrompt', 'prepareWorkflowJudgeCache', 'workflowJudgeAttempts', 'callJudge',
     'evalCollector', 'expect', 'console', 'performance', 'JUDGE_MS', 'WORKFLOW_JUDGE_RECORD_MS',
-    'setTimeout', 'clearTimeout', 'JudgeRefusalError', 'getCookieWorkflowManualReview', 'DEFAULT_JUDGE_MAX_TOKENS',
+    'setTimeout', 'clearTimeout', 'JudgeRefusalError', 'getCookieWorkflowManualReview', 'DEFAULT_JUDGE_MAX_TOKENS', 'resolveEvalModel',
     `${javascript}\nreturn runWorkflowJudge;`)(
     f.root, overrides.read ?? readWorkflowJudgeInput, buildWorkflowJudgePrompt,
     (options: WorkflowCacheOptions) => (overrides.prepare ?? prepareWorkflowJudgeCache)({ ...options, env: f.env }),
-    attempts, async (prompt: string, model: undefined, options: { signal: AbortSignal }) => {
+    attempts, async (prompt: string, model: string | undefined, options: { signal: AbortSignal }) => {
       prompts.push(prompt); signals.push(options.signal);
       return overrides.judge ? overrides.judge(prompt, model, options) : scores;
     }, { addTest: (entry: any) => records.push(entry) }, expect, { log() {} },
     overrides.clock ? { now: overrides.clock } : performance, overrides.budget ?? 120_000, overrides.allowance ?? 5_000,
     overrides.setTimer ?? setTimeout, overrides.clearTimer ?? clearTimeout,
-    JudgeRefusalError, getCookieWorkflowManualReview, DEFAULT_JUDGE_MAX_TOKENS);
+    JudgeRefusalError, getCookieWorkflowManualReview, DEFAULT_JUDGE_MAX_TOKENS, resolveEvalModel);
   return { run, records, signals, prompts, attempts, options: { ...f.opts, suite: 'Cache regression' } };
 }
+
+test('the actual workflow callback preserves the pinned model and frontier rubric for custom inputs', async () => {
+  const f = fixture();
+  const models: Array<string | undefined> = [];
+  const actual = actualCallback(f, { judge: async (_prompt, model) => { models.push(model); return scores; } });
+  await actual.run({ ...actual.options, model: 'claude-sonnet-4-6', agentCapability: 'frontier',
+    readInput: () => readWorkflowJudgeInput(f.opts) });
+  expect(models).toEqual(['claude-sonnet-4-6']);
+  expect(actual.prompts[0]).toContain('GPT-5.6 Sol-level capability or stronger');
+  expect(actual.records[0]).toMatchObject({ passed: true, model: 'claude-sonnet-4-6', prompt: actual.prompts[0] });
+});
+
+test('the registered ship callback sends the frontier rubric and still rejects subthreshold clarity', async () => {
+  const source = fs.readFileSync(path.join(import.meta.dir, 'skill-llm-eval.test.ts'), 'utf8');
+  const registration = source.match(/testIfSelected\('ship\/SKILL\.md workflow',[\s\S]*?await runWorkflowJudge\(\{([\s\S]*?)\n    \}\);/);
+  expect(registration).not.toBeNull();
+  const registered = new Function('QA_DISCOVERY_REFERENCES', `return ({${registration![1]}});`)(QA_DISCOVERY_REFERENCES);
+  const f = fixture();
+  Object.assign(f.env, { EVALS_FRESH: '1' });
+  const options = { ...registered, skillPath: f.opts.skillPath, startMarker: f.opts.startMarker,
+    endMarker: f.opts.endMarker, references: [] };
+  const passing = actualCallback(f);
+  await passing.run(options);
+  expect(passing.prompts).toHaveLength(1);
+  expect(passing.prompts[0]).toContain('GPT-5.6 Sol-level capability or stronger');
+  expect(passing.records[0]).toMatchObject({ passed: true, execution: 'executed' });
+  const failing = actualCallback(f, { judge: async () => ({ ...scores, clarity: 3 }) });
+  await expect(failing.run(options)).rejects.toThrow();
+  expect(failing.prompts).toEqual(passing.prompts);
+  expect(failing.records[0]).toMatchObject({ passed: false, execution: 'executed',
+    exit_reason: 'validation_failed', judge_scores: { clarity: 3 } });
+  expect(f.entries()).toHaveLength(0);
+});
 
 test('the actual workflow callback executes once, reuses with provenance, and preserves assertion failures', async () => {
   const f = fixture(); const first = actualCallback(f);

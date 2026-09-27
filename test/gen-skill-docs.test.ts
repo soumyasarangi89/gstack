@@ -359,7 +359,10 @@ describe('gen-skill-docs', () => {
     // Aside is the primary browser: every browsing skill renders the Aside
     // contract ({{ASIDE_SETUP}}); the browse binary is its fallback.
     const qaTmpl = fs.readFileSync(path.join(ROOT, 'qa', 'SKILL.md.tmpl'), 'utf-8');
-    expect(qaTmpl).toContain('{{ASIDE_SETUP}}');
+    expect(qaTmpl).not.toContain('{{ASIDE_SETUP}}');
+    expect(qaTmpl).toContain('{{SECTION:browser-setup}}');
+    expect(fs.readFileSync(path.join(ROOT, 'qa/sections/browser-setup.md.tmpl'), 'utf8'))
+      .toContain('{{ASIDE_SETUP}}');
     expect(browseTmpl).toContain('{{ASIDE_SETUP}}');
   });
 
@@ -572,22 +575,47 @@ describe('gen-skill-docs', () => {
     }
   });
 
-  test('qa and qa-only templates use QA_METHODOLOGY placeholder', () => {
-    // qa carve: the macro moved into the section template (the skeleton
-    // carries the STOP-Read pointer); qa-only remains an inline monolith.
+  test('qa and qa-only load the shared QA_METHODOLOGY through exploration', () => {
     const qaSkeletonTmpl = fs.readFileSync(path.join(ROOT, 'qa', 'SKILL.md.tmpl'), 'utf-8');
-    expect(qaSkeletonTmpl).toContain('{{SECTION:qa-patterns}}');
+    expect(qaSkeletonTmpl).toContain('{{SECTION:exploratory}}');
+    expect(qaSkeletonTmpl).toContain('{{QA_METHOD_READS}}');
     expect(qaSkeletonTmpl).not.toContain('{{QA_METHODOLOGY}}');
     const qaSectionTmpl = fs.readFileSync(path.join(ROOT, 'qa', 'sections', 'qa-patterns.md.tmpl'), 'utf-8');
     expect(qaSectionTmpl).toContain('{{QA_METHODOLOGY}}');
 
     const qaOnlyTmpl = fs.readFileSync(path.join(ROOT, 'qa-only', 'SKILL.md.tmpl'), 'utf-8');
-    expect(qaOnlyTmpl).toContain('{{QA_METHODOLOGY}}');
+    expect(qaOnlyTmpl).not.toContain('{{QA_METHODOLOGY}}');
+    expect(qaOnlyTmpl).toContain('{{SECTION:exploratory}}');
+    expect(qaOnlyTmpl).toContain('{{QA_METHOD_READS}}');
+    for (const skill of ['qa', 'qa-only']) {
+      expect(fs.readFileSync(path.join(ROOT, skill, 'sections/exploratory.md.tmpl'), 'utf8'))
+        .toContain('{{QA_EXPLORATORY}}');
+      const entry = fs.readFileSync(path.join(ROOT, skill, 'SKILL.md'), 'utf8');
+      const directoryRead = skill === 'qa'
+        ? 'Read `sections/scope.md` relative to the installed `qa`/`gstack-qa` SKILL.md directory'
+        : "Use this host's installed `qa`/`gstack-qa` SKILL.md directory for these reads";
+      expect(entry).toContain(directoryRead);
+      for (const method of ['system-functional', 'qa-patterns']) {
+        const methodRead = `Read \`sections/${method}.md\` in full.`;
+        expect(entry).toContain(methodRead);
+        expect(entry.indexOf(directoryRead)).toBeLessThan(entry.indexOf(methodRead));
+        const directory = path.resolve(ROOT, skill, skill === 'qa-only' ? '../qa' : '.');
+        expect(fs.realpathSync(path.join(directory, 'sections', `${method}.md`)))
+          .toBe(path.join(ROOT, 'qa', 'sections', `${method}.md`));
+      }
+      expect(entry).toContain('**Browser surfaces only:**\nRead `sections/qa-patterns.md` in full.');
+      expect(fs.readFileSync(path.join(ROOT, skill, 'sections/exploratory.md'), 'utf8'))
+        .toContain('Read the selected surface methods first.');
+    }
   });
 
-  test('QA_METHODOLOGY appears expanded in both qa and qa-only generated files', () => {
+  test('QA_METHODOLOGY is expanded in the shared resource referenced by qa and qa-only', () => {
     const qaContent = readSkillUnion('qa'); // carved: methodology lives in qa/sections/qa-patterns.md
-    const qaOnlyContent = fs.readFileSync(path.join(ROOT, 'qa-only', 'SKILL.md'), 'utf-8');
+    const qaOnlyUnion = readSkillUnion('qa-only');
+    expect(qaOnlyUnion).toContain("Use this host's installed `qa`/`gstack-qa` SKILL.md directory for these reads");
+    expect(qaOnlyUnion).toContain('**Browser surfaces only:**\nRead `sections/qa-patterns.md` in full.');
+    expect(qaOnlyUnion).not.toContain('Health Score Rubric');
+    const qaOnlyContent = qaOnlyUnion + fs.readFileSync(path.join(ROOT, 'qa/sections/qa-patterns.md'), 'utf8');
 
     // Both should contain the health score rubric
     expect(qaContent).toContain('Health Score Rubric');
@@ -803,16 +831,16 @@ describe('REVIEW_DASHBOARD resolver', () => {
 
   test('dashboard treats review as a valid Eng Review source', () => {
     const content = readShipUnion();
-    expect(content).toContain('plan-eng-review, review, plan-design-review');
-    expect(content).toContain('`review` (diff-scoped pre-landing review)');
-    expect(content).toContain('`plan-eng-review` (plan-stage architecture review)');
-    expect(content).toContain('from either \\`review\\` or \\`plan-eng-review\\`');
+    expect(content).toContain('| Eng Review | `review` or `plan-eng-review` | (DIFF) or (PLAN) |');
+    expect(content).toContain('**Content-first rule:** For `review`');
+    expect(content).toContain('**Plan records** (plan-ceo-review, plan-eng-review');
+    expect(content.replace(/\s+/g, ' ')).toContain('CLEARED requires the selected Eng Review to be `clean`, within 7 days and fresh under step 2');
   });
 
   test('shared dashboard propagates review source to plan-eng-review', () => {
     const content = readSkillUnion('plan-eng-review'); // carved: review body moved to section
-    expect(content).toContain('plan-eng-review, review, plan-design-review');
-    expect(content).toContain('`review` (diff-scoped pre-landing review)');
+    expect(content).toContain('| Eng Review | `review` or `plan-eng-review` | (DIFF) or (PLAN) |');
+    expect(content).toContain('**Content-first rule:** For `review`');
   });
 
   test('resolver output contains key dashboard elements', () => {
@@ -833,7 +861,7 @@ describe('REVIEW_DASHBOARD resolver', () => {
 
   test('dashboard includes staleness detection prose', () => {
     const content = readSkillUnion('plan-ceo-review'); // carved: dashboard moved to section
-    expect(content).toContain('Staleness detection');
+    expect(content).toContain('**2. Check freshness before choosing a verdict.**');
     expect(content).toContain('commit');
   });
 
@@ -1075,7 +1103,8 @@ describe('TEST_COVERAGE_AUDIT placeholders', () => {
       'utf-8',
     );
     expect(reviewArmySection).toContain('"advisory": true');
-    expect(reviewArmySection).toContain('quality score over NON-advisory findings only');
+    expect(reviewArmySection).toContain('Only specialist findings enter this header and `quality_score`; core findings do not');
+    expect(reviewArmySection).toContain('Use the merged NON-advisory specialist findings for both counts and score');
     expect(reviewArmySection).toContain('Simplification: lean already — nothing to cut.');
     expect(reviewArmySection).toContain('net: -N lines possible');
     expect(reviewArmySection).toContain('--simplification');
@@ -1136,9 +1165,10 @@ describe('TEST_COVERAGE_AUDIT placeholders', () => {
   });
 
   test('ship SKILL.md contains re-run idempotency behavior', () => {
-    expect(shipSkill).toContain('Re-run behavior (idempotency)');
-    expect(shipSkill).toContain('Every invocation repeats verification:');
-    expect(shipSkill).toContain('Prior execution never exempts verification.');
+    expect(shipSkill).toContain('**Route:**');
+    expect(shipSkill.replace(/\s+/g, ' ')).toContain('integrate (1–3) → test and review (4–11.5) → prepare the release (12–15) → verify frozen content (16) → push and publish (17–21)');
+    expect(shipSkill.replace(/\s+/g, ' ')).toContain('Every new invocation repeats Steps 1–16, including both reviews and the docs audit');
+    expect(shipSkill.replace(/\s+/g, ' ')).toContain('Steps 12, 17 and 19 prevent duplicate bumps, pushes and PRs, never verification');
   });
 });
 
@@ -1228,9 +1258,9 @@ describe('PLAN_FILE_REVIEW_REPORT resolver', () => {
       for (const output of [confidence, dashboard, report, outside]) expect(output).not.toContain('\\`');
       expect(confidence).toBe(generateConfidenceCalibration({...ctx, skillName: 'plan-ceo-review'}).replaceAll('\\`', '`'));
       const ceoDashboard = generateReviewDashboard({...ctx, skillName: 'plan-ceo-review'}).replaceAll('\\`', '`');
-      const ceoVoiceSource = 'From gstack-review-read output, use entries whose skill is `autoplan-voices` or `design-outside-voices` for the coverage detail below the dashboard.';
-      expect(dashboard).toContain(ceoVoiceSource);
-      expect(ceoDashboard).toContain(ceoVoiceSource);
+      const ceoVoiceSource = 'Below the dashboard, group `autoplan-voices` and `design-outside-voices` by workflow run and phase';
+      expect(dashboard.replace(/\s+/g, ' ')).toContain(ceoVoiceSource);
+      expect(ceoDashboard.replace(/\s+/g, ' ')).toContain(ceoVoiceSource);
       expect(ceoDashboard).toBe(dashboard);
       for (const field of ['status', 'unresolved', 'critical_gaps', 'issues_found', 'mode', 'commit']) {
         expect(report).toContain('`' + field + '`');
@@ -1331,25 +1361,36 @@ describe('PLAN_VERIFICATION_EXEC placeholder', () => {
     expect(shipSkill).toContain('Plan Verification');
   });
 
-  test('references /qa-only invocation', () => {
-    expect(shipSkill).toContain('qa-only/SKILL.md');
-    expect(shipSkill).toContain('qa-only');
+  test('references the shared explorer without invoking an entire QA workflow', () => {
+    expect(shipSkill).toContain("From the installed /ship SKILL.md's directory, Read `../qa/sections/scope.md` in full");
+    const load = shipSkill.indexOf('Read `sections/exploratory.md` in that QA installation and the selected methods below before continuing');
+    const preflight = shipSkill.indexOf('Run the shared exploratory Charter and preflight now');
+    const probes = shipSkill.indexOf('**3. Run the checks without repairing the product.**');
+    expect(load).toBeGreaterThan(-1);
+    expect(preflight).toBeGreaterThan(load);
+    expect(probes).toBeGreaterThan(preflight);
+    expect(shipSkill).toContain('Do not invoke an entire QA skill or start probes here');
   });
 
-  test('contains dev-server discovery (CLAUDE.md first, then a port probe)', () => {
-    // Fork port wave 2: the hardcoded 4-port list became read-CLAUDE.md-or-
-    // probe; the probe loops common ports instead of naming each once.
-    expect(shipSkill).toContain('CLAUDE.md first');
-    expect(shipSkill).toContain('http://localhost:$_p');
-    expect(shipSkill).toContain('NO_SERVER');
+  test('keeps declared browser URLs separate from native functional probes', () => {
+    expect(shipSkill).toContain('items use the declared project/plan dev URL');
+    expect(shipSkill).toContain('functional items use native tools without discovering a web server');
+    expect(shipSkill.replace(/\s+/g, ' ')).toContain('An API URL is not automatically a page');
   });
 
-  test('skips gracefully when no verification section', () => {
-    expect(shipSkill).toContain('No verification steps found in plan');
+  test('retains automatic exploration when there is no plan or verification section', () => {
+    expect(shipSkill).toContain('If no verification section or no plan file');
+    expect(shipSkill).toContain('Automatic diff-scoped QA still runs');
+    expect(shipSkill).toContain('plan checks beyond that smoke budget remain required');
   });
 
-  test('skips gracefully when no dev server', () => {
-    expect(shipSkill).toContain('No dev server detected');
+  test('blocks unavailable required checks instead of silently skipping them', () => {
+    const flat = shipSkill.replace(/\s+/g, ' ');
+    expect(flat).toContain('Noninteractive runs return blocked');
+    expect(flat).toContain("Send failed, blocked or unrun checks through Step 9's required-probe gate, never silently waive them");
+    expect(flat).toContain('Missing/unreadable assets block required QA');
+    expect(flat).toContain('explicitly accept each named probe\'s concrete risk');
+    expect(flat).toContain('Keep actual outcomes and incomplete flags; VERIFY_RESULT stays fail');
   });
 });
 
@@ -2446,12 +2487,14 @@ describe('Design approval reconciliation', () => {
     const decisions = section.slice(decisionStart, decisionEnd).replace(/\s+/g, ' ');
     expect(decisions).toContain('AskUserQuestion({ questions: [currentDecision] })');
     expect(decisions).toContain('one question object for one choice; other IDs wait');
-    expect(decisions).toContain("If you discover another independent choice, return to step 2 before sending the question");
-    expect(decisions.indexOf("**STOP until the actual answer arrives.**")).toBeLessThan(decisions.indexOf('### 6. Apply and refresh'));
-    expect(decisions).toContain("Return to step 1 with the updated working plan and answer");
+    expect(decisions).toContain("If you discover another independent choice, separate it and rebuild this comparison before saving or sending the question");
+    expect(decisions.indexOf("**STOP until the actual answer arrives.**")).toBeLessThan(decisions.indexOf('### Record the answer'));
+    expect(decisions).toContain("For the next choice, use the updated working plan and answer");
     expect(gate).toContain('report the stale verification and stop');
-    expect(gate).toContain('starts at Decision procedure for changed choices, then Approval readiness, then repeats affected outputs, Read-back,');
-    expect(gate).toContain('Review Log and dashboard');
+    expect(gate).toContain('Resume under **Recovery routing → Late change or missing work**');
+    const recovery = readSkillUnion('plan-eng-review').split('**Late change or missing work:**')[1]!.split('**Blocked outcome:**')[0]!.replace(/\s+/g, ' ');
+    expect(recovery).toContain('new or reopened choices use Decision procedure');
+    expect(recovery).toContain('Repeat Approval readiness, then Required outputs steps 1–4 for changed outputs before choosing navigation again');
     expect(gate).toContain('all six columns: Review / Trigger / Why / Runs / Status / Findings');
     expect(gate).toContain('follow **Blocked outcome**');
     const report = extractMarkdownSection(section, '### Write to the report file');

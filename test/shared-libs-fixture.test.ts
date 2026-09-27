@@ -13,6 +13,8 @@ import { EvalCollector, type EvalTestEntry } from './helpers/eval-store';
 import { collectorOutcomeCounts } from '../scripts/test-paid-shards';
 import { E2E_TOUCHFILES, GLOBAL_TOUCHFILES, selectTests } from './helpers/touchfiles';
 import nativeNoChangeCases from './fixtures/shared-libs-no-change-ci-public.json';
+import r44 from './fixtures/shared-libs-index-flags-r44-packets.json';
+import { seedPathReviewPrerequisites, checkPathReviewPrerequisites } from './helpers/shared-libs-path-fixture';
 
 const cleanup: string[] = [];
 afterEach(() => {
@@ -26,6 +28,67 @@ function scratch(): string {
 }
 
 describe('shared-code legacy interactive actor', () => {
+  test('R44 retains the complete native bit-preservation packet without partial acknowledgments', async () => {
+    const input = structuredClone(r44.packets[0].input), before = structuredClone(input);
+    const answers: unknown[] = [], refusals: Error[] = [];
+    const callback = createSharedInteractiveToolHandler('skip', {
+      nonQuestion: () => { throw new Error('unexpected tool'); }, onQuestion: () => {},
+      onAnswer: (_input, answer) => { answers.push(answer); }, onRefusal: error => { refusals.push(error); },
+    });
+    const expected = { [input.questions[0].question]: 'Skip', [input.questions[1].question]: 'Leave it' };
+    expect(await callback('AskUserQuestion', input)).toEqual({ behavior: 'allow', updatedInput: { ...input, answers: expected } });
+    expect(answers).toEqual([expected]);
+    expect(refusals).toEqual([]);
+    expect(input).toEqual(before);
+  });
+
+  test.each([1, 2])('R44 missing-stage packet %s never grants completion through the skip actor', async index => {
+    const input = structuredClone(r44.packets[index].input), answers: unknown[] = [];
+    const callback = createSharedInteractiveToolHandler('skip', {
+      nonQuestion: () => {}, onQuestion: () => {}, onAnswer: (_input, answer) => { answers.push(answer); },
+    });
+    await expect(callback('AskUserQuestion', input)).rejects.toThrow('No unambiguous no-change option');
+    expect(answers).toEqual([]);
+  });
+
+  test.each(['Keep the bit set.', 'Preserve the bits set.', 'Retain the flag set.', 'Leave the index bits set.'])(
+    'R44 Git-state retention is a class of no-change commitments: %s', async description => {
+      const input = structuredClone(r44.packets[0].input);
+      input.questions[1].options[1].description = description;
+      const callback = createSharedInteractiveToolHandler('skip', {
+        nonQuestion: () => {}, onQuestion: () => {}, onAnswer: () => {},
+      });
+      expect((await callback('AskUserQuestion', input)).updatedInput.answers).toEqual({
+        [input.questions[0].question]: 'Skip', [input.questions[1].question]: 'Leave it',
+      });
+    });
+
+  test.each([
+    { description: 'Clear the bit. Keep file contents unchanged.' },
+    { description: 'Keep the bit set; unset the other index flag without changing file contents.' },
+    { description: 'Keep the bit set. Runs git update-index --no-assume-unchanged src/retry-route.ts. Does not change file contents.' },
+    { description: 'Keep the bit set.', preview: 'git update-index --no-skip-worktree src/retry-route.ts' },
+    { label: 'Leave it and clear the flag', description: 'Keep the bit set.' },
+    { description: 'Keep the bit set; apply the worker fix.' },
+  ])('R44 preserved file bytes do not authorize mixed Git/source mutation: %j', async changed => {
+    const input = structuredClone(r44.packets[0].input), answers: unknown[] = [], refusals: Error[] = [];
+    Object.assign(input.questions[1].options[1], changed);
+    const callback = createSharedInteractiveToolHandler('skip', {
+      nonQuestion: () => {}, onQuestion: () => {}, onAnswer: (_input, answer) => { answers.push(answer); },
+      onRefusal: error => { refusals.push(error); },
+    });
+    await expect(callback('AskUserQuestion', input)).rejects.toThrow('No unambiguous no-change option');
+    expect(answers).toEqual([]);
+    expect(refusals).toHaveLength(1);
+  });
+
+  test('R44 a bare bit cannot acquire Git-state meaning from an unrelated question', async () => {
+    const input = structuredClone(r44.packets[0].input);
+    input.questions[1].question = 'Should I alter a parser option?';
+    const callback = createSharedInteractiveToolHandler('skip', { nonQuestion: () => {}, onQuestion: () => {}, onAnswer: () => {} });
+    await expect(callback('AskUserQuestion', input)).rejects.toThrow('No unambiguous no-change option');
+  });
+
   test.each(nativeNoChangeCases.cases)('answers retained CI no-change questions from attempt $attempt', async ({ input, answers }) => {
     const before = structuredClone(input), observed: unknown[] = [];
     const callback = createSharedInteractiveToolHandler('skip', {
@@ -434,6 +497,89 @@ describe('shared-code legacy interactive actor', () => {
     const selected = { Decision: 'custom exact answer' };
     expect((await createSharedInteractiveToolHandler(() => selected, hooks)('AskUserQuestion', input)).updatedInput.answers)
       .toBe(selected);
+  });
+
+  const r20Packets = JSON.parse(fs.readFileSync(path.join(import.meta.dir,
+    'fixtures/shared-libs-index-flags-r20-packets.json'), 'utf8')).cases;
+
+  test('the R20 packet dependency selects all owning native lifecycle cases', () => {
+    expect(selectTests(['test/fixtures/shared-libs-index-flags-r20-packets.json'], E2E_TOUCHFILES, GLOBAL_TOUCHFILES).selected.sort()).toEqual([
+      'shared-libs-review-index-flags', 'shared-libs-review-lifecycle', 'shared-libs-review-path-eligibility',
+      'shared-libs-review-prior-coverage', 'shared-libs-review-revalidation',
+    ]);
+  });
+
+  test.each(r20Packets)('R20 $scenario attempt $attempt acknowledges the exact complete native packet', async packet => {
+    const input = structuredClone(packet.input), before = structuredClone(input);
+    const answers: unknown[] = [], refusals: Error[] = [];
+    const callback = createSharedInteractiveToolHandler('skip', {
+      nonQuestion: () => { throw new Error('unexpected tool'); }, onQuestion: () => {},
+      onAnswer: (_input, answer) => { answers.push(answer); }, onRefusal: error => { refusals.push(error); },
+    });
+    const expected = Object.fromEntries(input.questions.map((question: any, index: number) =>
+      [question.question, packet.expected_labels[index]]));
+    expect(packet.original_passed).toBe(false);
+    expect(packet.original_exit_reason).toBe('actor_contract');
+    expect(await callback('AskUserQuestion', input)).toEqual({ behavior: 'allow', updatedInput: { ...input, answers: expected } });
+    expect(answers).toEqual([expected]);
+    expect(refusals).toEqual([]);
+    expect(input).toEqual(before);
+  });
+
+  test.each(['No, leave it set', 'No: keep current', 'No, do not change', 'No, Skip', 'No, Leave as-is (Recommended)'])(
+    'negative answer prefixes preserve the exact supported label: %s', async label => {
+      const input = { questions: [{ question: 'Index flag', options: [{ label: 'Clear the flag' }, { label }] }] };
+      const callback = createSharedInteractiveToolHandler('skip', {
+        nonQuestion: () => {}, onQuestion: () => {}, onAnswer: () => {},
+      });
+      expect((await callback('AskUserQuestion', input)).updatedInput.answers).toEqual({ 'Index flag': label });
+    });
+
+  test.each([
+    'The route edit stays invisible to git status/diff and outside snapshot coverage.',
+    'The worker change remains unchanged.',
+    'The source update stays unapplied.',
+    'The parser fix remains hidden from Git.',
+    'The index flag update stays untouched.',
+    'The route edits remain excluded from snapshot coverage.',
+  ])('nominal action subjects with preservation predicates grant no mutation: %s', async description => {
+    const input = structuredClone(r20Packets[1].input);
+    input.questions[1].options[1].description = description;
+    const callback = createSharedInteractiveToolHandler('skip', {
+      nonQuestion: () => {}, onQuestion: () => {}, onAnswer: () => {},
+    });
+    expect((await callback('AskUserQuestion', input)).updatedInput.answers).toEqual({
+      [input.questions[0].question]: 'Skip', [input.questions[1].question]: 'Leave it set',
+    });
+  });
+
+  test.each([
+    { label: 'No, investigate', description: '' },
+    { label: 'No, keep going', description: '' },
+    { label: 'No, leave it set and fix the worker' },
+    { label: 'No, leave it set', description: 'Clear the index flag.' },
+    { label: 'No, leave it set', preview: '// Apply the route fix.' },
+    { description: 'The route edit replaces the parser.' },
+    { description: 'The worker imports the helper.' },
+    { description: 'The route edit stays invisible; fix the worker.' },
+    { description: 'The route edit remains hidden while I will refactor the worker.' },
+    { description: 'The source update stays unapplied until we change the worker.' },
+    { description: 'The parser fix remains hidden after rewriting the helper.' },
+    { description: 'The index flag update stays cleared.' },
+    { description: 'The route edits remain applied.' },
+    { description: 'The route edit stays invisible.', preview: 'The worker change applies the patch.' },
+  ])('R20 preservation packets reject later or mixed mutation commitments atomically: %j', async changed => {
+    const input = structuredClone(r20Packets[1].input);
+    Object.assign(input.questions[1].options[1], changed);
+    const before = structuredClone(input), answers: unknown[] = [], refusals: Error[] = [];
+    const callback = createSharedInteractiveToolHandler('skip', {
+      nonQuestion: () => {}, onQuestion: () => {}, onAnswer: answer => { answers.push(answer); },
+      onRefusal: error => { refusals.push(error); },
+    });
+    await expect(callback('AskUserQuestion', input)).rejects.toThrow('No unambiguous no-change option');
+    expect(answers).toEqual([]);
+    expect(refusals).toHaveLength(1);
+    expect(input).toEqual(before);
   });
 });
 
@@ -939,15 +1085,19 @@ describe('shared-code capture attempt accounting', () => {
     expect(end).toBeGreaterThan(start);
     const callback = new Bun.Transpiler({ loader: 'ts' }).transformSync(source.slice(start, end));
     const captures = new SharedCaptureAccumulator();
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'gstack-late-path-'));
+    const fixture = createSharedLibsFixture('late-path');
+    const resumed = seedPathReviewPrerequisites(fixture);
+    const directory = fixture.root;
     cleanup.push(directory);
     let started!: () => void, release!: () => void;
     const captureStarted = new Promise<void>(resolve => { started = resolve; });
     const exercise = new Function('deps', `const { captures, preparePathEligibilityFixture, fs, path,
-      reviewLifecycleInstructions, reviewRevalidationPrompt, runSharedInteractive, readRequests, expect, CAPTURE_LONG_MS } = deps;
+      reviewLifecycleInstructions, reviewRevalidationPrompt, runSharedInteractive, readRequests, expect, CAPTURE_LONG_MS,
+      checkPathReviewPrerequisites } = deps;
       ${callback}\nreturn exerciseEligibility;`)({
       captures, fs, path, expect, CAPTURE_LONG_MS: 5_000,
-      preparePathEligibilityFixture: () => ({ fixture: { root: directory }, current: { evidence_paths: [] } }),
+      preparePathEligibilityFixture: () => ({ fixture, resumed, current: { evidence_paths: [] } }),
+      checkPathReviewPrerequisites,
       reviewLifecycleInstructions: () => 'unused instructions',
       reviewRevalidationPrompt: () => 'unused prompt',
       readRequests: () => [],

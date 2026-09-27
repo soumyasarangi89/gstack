@@ -895,3 +895,68 @@ test('native clipped regressions retain the existing parser and owned-permission
     }
   }
 });
+
+test('atomic documentation attribution dependencies select every documentation case', () => {
+  const expected = ['docsync-spawned', 'ship-docsync', 'ship-docsync-completion', 'ship-docsync-current',
+    'ship-docsync-failure', 'ship-docsync-store', 'ship-docsync-missing-marker', 'ship-docsync-missing-asset',
+    'ship-docsync-launch-failure', 'ship-docsync-timeout-unsettled', 'ship-docsync-late-result',
+    'ship-docsync-stale-before', 'ship-docsync-stale-after', 'ship-docsync-recovery'].sort();
+  for (const file of ['test/helpers/qa-checkpoint-evidence.ts', 'test/helpers/qa-functional-observer.ts',
+    'test/docsync-atomic-writes.test.ts', 'test/docsync-lifecycle-interface.test.ts']) {
+    const selected = selectTests([file], E2E_TOUCHFILES);
+    expect(selected.reason).toBe('diff');
+    expect(selected.selected.filter(name => name === 'docsync-spawned' || name.startsWith('ship-docsync')).sort()).toEqual(expected);
+    expect(selectTests([file], LLM_JUDGE_TOUCHFILES).selected).toEqual([]);
+  }
+  expect(selectTests(['test/docsync-atomic-writes.test.ts'], E2E_TOUCHFILES).selected.sort()).toEqual(expected);
+  expect(selectTests(['test/docsync-lifecycle-interface.test.ts'], E2E_TOUCHFILES).selected.sort()).toEqual(expected);
+});
+
+test('publication gate regressions select the ship workflow judgment', () => {
+  const file = 'test/ship-publication-gates.test.ts';
+  expect(selectTests([file], LLM_JUDGE_TOUCHFILES).selected).toEqual(['ship/SKILL.md workflow']);
+  expect(selectTests([file], E2E_TOUCHFILES).selected).toEqual([]);
+});
+
+test('nested documentation callback regressions retain the complete atomic attribution selection', () => {
+  const selected = selectTests(['test/docsync-nested-writes.test.ts'], E2E_TOUCHFILES);
+  expect(selected.reason).toBe('diff');
+  expect(selected.selected.sort()).toEqual(selectTests(['test/docsync-atomic-writes.test.ts'], E2E_TOUCHFILES).selected.sort());
+  expect(selected.selected).toHaveLength(14);
+  expect(selectTests(['test/docsync-nested-writes.test.ts'], LLM_JUDGE_TOUCHFILES).selected).toEqual([]);
+});
+
+test('shared checker callback regressions select the native consumers they exercise', () => {
+  const file = 'test/shared-libs-checker-interface-evidence.test.ts';
+  const selected = selectTests([file], E2E_TOUCHFILES);
+  expect(selected.reason).toBe('diff');
+  expect(selected.selected.sort()).toEqual(['shared-libs-review-path-eligibility',
+    'shared-libs-review-index-flags', 'shared-libs-review-prior-coverage',
+    'shared-libs-review-revalidation'].sort());
+  expect(selectTests([file], LLM_JUDGE_TOUCHFILES).selected).toEqual([]);
+});
+
+test('captured shared index-flag packets retain the existing actor selection', () => {
+  const file = 'test/fixtures/shared-libs-index-flags-r20-packets.json';
+  const selected = selectTests([file], E2E_TOUCHFILES);
+  expect(selected.reason).toBe('diff');
+  expect(selected.selected.sort()).toEqual(['shared-libs-review-path-eligibility',
+    'shared-libs-review-index-flags', 'shared-libs-review-prior-coverage',
+    'shared-libs-review-lifecycle', 'shared-libs-review-revalidation'].sort());
+  expect(selectTests([file], LLM_JUDGE_TOUCHFILES).selected).toEqual([]);
+});
+
+test('checkpoint regressions select all consumers of the shared native evidence helper', () => {
+  const file = 'test/qa-checkpoint-evidence.test.ts';
+  const selected = selectTests([file], E2E_TOUCHFILES);
+  expect(selected.reason).toBe('diff');
+  expect(selected.selected.sort()).toEqual(selectTests(['test/helpers/qa-checkpoint-evidence.ts'], E2E_TOUCHFILES).selected.sort());
+  expect(selected.selected).toHaveLength(23);
+  expect(selectTests([file], LLM_JUDGE_TOUCHFILES).selected).toEqual([]);
+});
+
+test('plan-verification handoff regressions select the explicit-plan caller and ship judgment', () => {
+  const file = 'test/ship-plan-completion-invariants.test.ts';
+  expect(selectTests([file], E2E_TOUCHFILES).selected).toEqual(['ship-exploratory-plan-checks']);
+  expect(selectTests([file], LLM_JUDGE_TOUCHFILES).selected).toEqual(['ship/SKILL.md workflow']);
+});
